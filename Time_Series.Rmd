@@ -1,0 +1,358 @@
+---
+title: "Time Series Exploration with Eviction Filings"
+author: "Bliss Cohen"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document: default
+  html_document: default
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, warnings = FALSE, message = FALSE,
+                      fig.width = 6, fig.height = 3)
+
+```
+
+```{r, load libraries, echo = FALSE}
+
+library(tidyverse)
+library(knitr)
+library(stringr)
+library(lubridate)
+library(moments)
+library(grid)
+library(gridExtra)
+
+```
+
+### Background
+
+I am in the process of developing an [Eviction Tracker](https://bliss-cohen.shinyapps.io/Eviction_Tracker/?_ga=2.225017695.437344852.1597582921-392008532.1594210652) for a client.  Evictions are filed on a daily basis, 5 days/week excluding holidays.  I aggregate these filings each month across some Wisconsin counties and for the State of Wisconsin.
+
+I would like to add an 'Overview' first page to the Tracker.  One of the things I'd like to include in the 'Overview' is trending information.  If desired, people could then fish out specific information on the subsequent pages which are currently in place.  
+
+After exploring distributions of eviction filings, I have come to the conclusion that the distributions are definitely not normal.  I believe there is a seasonal component.  Besides being affected by seasonal fluctuations, filing patterns altered in response to a state-wide eviction moratorium in effect between March 27 - May 26, 2020.
+
+I am not trying to develop a predictive model!  I am, however, trying to figure out the best way to visualize 'big picture' trends by region.
+
+### Objective
+
+Develop the appropriate analysis and visual to show 'big picture' trends in eviction filings
+
+### Read in Data
+
+Below is a snapshot of eviction filing aggregations up to my last update of July 31, 2020.  The 'Date_for_Filter' field just allows me to avoid plotting data past the last update where no data exists.  I have also scaled the filings to the number of rental units to find eviction rates.
+
+```{r, read in data}
+
+Summary_Year_Month <- read_rds("Summary_Year_Month.rds")
+
+last_update <- read_lines("last_update")
+
+```
+
+```{r, show primary data file}
+
+head(Summary_Year_Month)
+
+```
+
+### Graph Distributions
+
+I examined eviction filing distributions via histograms and qq-plots.  The distributions were not normal.  The graphs below are specific to Wisconsin.
+
+```{r, create functions for visuals}
+
+# histogram
+
+v_hist <- function(my_region) {
+  Summary_Year_Month %>% 
+    filter(Region == my_region) %>% 
+    ggplot(aes(x = Evictions_Filed)) +
+    geom_histogram() +
+    labs(title = my_region) +
+    theme_classic()
+}
+
+
+# qq plot
+
+v_qq <- function(my_region) {
+  Summary_Year_Month %>% 
+    filter(Region == my_region) %>% 
+    ggplot(aes(sample = Evictions_Filed)) +
+  geom_qq() +
+  geom_qq_line() +
+  labs(title = my_region) +
+  theme_classic()
+}
+
+```
+
+```{r, visual assessment of distributions}
+
+v_hist("WI")
+
+v_qq("WI")
+
+```
+
+### Assess Distribution Skew
+
+I used this [guide](https://www.datanovia.com/en/lessons/transform-data-to-normal-distribution-in-r/) to figure out how to assess skew using the moments package.  You can see from the skew numbers that none of the regions had a normal distribution.  It just didn't make sense to try to transform the distribution since some had a positive skew and some had a negative skew.
+
+```{r, measure skew}
+
+Skew_evictions <- Summary_Year_Month %>% 
+  group_by(Region) %>% 
+  nest() %>% 
+  mutate("Skew" = map(data, ~skewness(.x$Evictions_Filed)))
+
+```
+
+```{r, show skew}
+
+# Positive or negative skew...not like we can do a consistent transformation
+
+Skew_evictions[[3]]
+
+```
+
+### Plot Eviction Filings vs. Time
+
+The plot below shows how WI's raw data fluctuates over time.  It seems like there might be some type of repeating pattern, and certainly the moratorium is introducing an anomaly.
+
+```{r, create plot function, echo = FALSE}
+
+plot_evictions <- function(my_area){
+
+Summary_Year_Month %>% 
+  filter(Region == 'Brown',
+         Date_for_Filter <= mdy(last_update)) %>% 
+  ggplot(aes(x = Date_for_Filter)) +
+  geom_point(aes(y = Evictions_Filed)) +
+  geom_line(aes(y = Evictions_Filed), col = "#2780e3", size = 1) +
+  geom_vline(xintercept = as.Date("2020-05-26"),
+                             size = 1, color = "#666666", linetype = "dotted") +
+  geom_vline(xintercept = as.Date("2020-03-27"),
+                             size = 1, color = "#666666", linetype = "dotted") +
+  scale_x_date(date_labels = "%b-%y",
+               date_breaks = "3 months") +
+  labs(title = paste("Eviction Filings for", my_area)) +
+  theme_classic() +
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = -0.1),
+        plot.title = element_text(size = 15),
+        plot.margin = unit(c(0.5,1,0.7,2), "cm")) +
+   annotation_custom(textGrob("Eviction\nMoratorium\n March 27 - \nMay 26", gp = gpar(fontsize = 10,col = "#ff4557")), xmin = as.Date("2020-04-26"), xmax = as.Date("2020-04-26")) 
+  
+}
+
+```
+
+```{r, plot raw data, echo = FALSE}
+
+plot_evictions("WI")
+
+
+```
+
+### Create a Time Series Object and Decompose
+
+Since I suspected some kind of seasonality component, I started exploring time series objects.  Specifically, I extracted the State data and converted WI to a time series object.  I then used the decompose() function to separate the components into seasonal, trend, and random (residuals).
+
+I wasn't sure if the type of decomposition should be "additive" or "multiplicative" - maybe the amplitude is changing around July 2018 in the graph above?  In any case, I ultimately ran the decomposition both ways.
+
+The decomposition plot below is for the additive version.  I realize that the plots are shorter in "trend" and "random" because you need 6 months prior and post to find moving averages.  
+
+```{r, create time series object}
+
+Just_WI <- Summary_Year_Month %>% 
+   filter(Region == 'WI', 
+           Date_for_Filter <= mdy(last_update)) %>% 
+  pull(Evictions_Filed) %>% 
+    ts(frequency = 12, start = 2016)
+
+```
+
+```{r, show decompose components}
+
+decomp_WI_add <- (decompose(Just_WI, type = "additive"))
+
+plot(decomp_WI_add)
+
+```
+
+I can access the values from the decomposed time series.  Here I'm just showing the values used for a seasonal adjustment in the additive decomposition.
+
+```{r, show decomposed values}
+
+# decomp_WI_add$seasonal
+# 
+# decomp_WI_add$trend
+# 
+# decomp_WI_add$random
+
+# Seasonal adjustment
+
+decomp_WI_add$figure
+
+```
+
+The graphs below show the random component for additive and multiplicative.  Not sure if one is better or worse than the other...
+
+```{r, decompose multiplicative, echo = FALSE}
+
+decomp_WI_mult <- (decompose(Just_WI, type = "multiplicative"))
+
+```
+
+```{r, create data frame for additive and multiplicative, echo = FALSE}
+
+df_decomp_WI_add <- 
+  data.frame("Random" = decomp_WI_add$random,
+             "Decomp" = c(rep("additive")),
+             "New_Date" = seq(from = ymd('2016-01-01'),
+                          to = floor_date(mdy(last_update), 'month'), by = 'months')) %>% 
+  filter(!(is.na(Random)))
+
+df_decomp_WI_mult <- 
+  data.frame("Random" = decomp_WI_mult$random,
+             "Decomp" = c(rep("multiplicative")),
+             "New_Date" = seq(from = ymd('2016-01-01'),
+                          to = floor_date(mdy(last_update), 'month'), by = 'months')) %>% 
+  filter(!(is.na(Random)))
+
+
+df_decomp_WI <- rbind(df_decomp_WI_add, df_decomp_WI_mult)
+
+```
+
+```{r, create random plots, echo = FALSE}
+
+p_add <- df_decomp_WI %>% 
+  filter(Decomp == 'additive') %>% 
+  ggplot(aes(x = New_Date, y = Random)) +
+  geom_point() +
+  labs(title = "Random Component from Additive Decomp.") +
+  theme_classic() +
+  theme(axis.title = element_blank(),
+        plot.title = element_text(size = 8))
+        
+
+p_mult <- df_decomp_WI %>% 
+  filter(Decomp == 'multiplicative') %>% 
+  ggplot(aes(x = New_Date, y = Random)) +
+  geom_point() +
+  labs(title = "Random Component from Multiplicative Decomp.") +
+  theme_classic() +
+  theme(axis.title = element_blank(),
+        plot.title = element_text(size = 8))
+
+```
+
+```{r, side by side, echo = FALSE}
+
+grid.arrange(p_add, p_mult, nrow = 1)
+
+```
+
+### STL Confusion...I Like These Graphs But...
+
+Conceptually, the decompose stuff made some sense to me.  But now things get really fuzzy.  
+
+Although I am not trying to develop a predictive model, I realized that I needed some way to create estimates for the front and back ends of the decomposed trend line.  After googling until I couldn't take it anymore, it seemed like the stl function might be useful (Seasonal Decomposition of Time Series by Loess).  stl assumes an additive model (although you can transform the data if it is multiplicative).
+
+I don't know what this means, but I'll spit it out: "stl is a lowess smoother that replaces values with a 'locally weighted' robust regression estimate of the value."  I will just plow forward without fully understanding the next steps. 
+
+The seasonal, trend and remainder values are shown below after applying the stl function to WI data.
+
+```{r stl}
+
+
+stl_WI <- stl(Just_WI, "periodic")
+
+head(stl_WI$time.series)
+
+```
+
+I combined the stl output with the original data so I could make some graphs using one data frame.  
+
+```{r, stl with raw data}
+
+stl_WI_df <- stl_WI %>% 
+  pluck(1) %>% 
+  data.frame() %>% 
+    mutate("New_Date" = seq(from = ymd('2016-01-01'),
+                          to = floor_date(mdy(last_update), 'month'), by = 'months')) %>% 
+  mutate("trend_remainder" = trend + remainder) %>% 
+    select(New_Date, seasonal, trend, remainder, trend_remainder) %>% 
+  cbind(Just_WI)
+
+```
+
+In the first graph, I just plot the remainder.  This is my interpretation: the remainder pretty much fluctuates around 0 up until 2020.  Then the remainder goes out of whack, indicating that our model is not picking up other influencers like the moratorium.
+
+```{r, echo = FALSE}
+
+stl_WI_df %>% 
+  ggplot(aes(x = New_Date)) +
+  geom_point(aes(y = remainder), color = '#636363') +
+  labs(title = "WI Remainder") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+```
+
+In the next graph, I added the trend and remainder values together for the dots and added a blue line for the trend.  
+
+```{r, trend plus remainder and trend, echo = FALSE}
+
+# dots are trend + remainder
+
+stl_WI_df %>% 
+  ggplot(aes(x = New_Date)) +
+  geom_point(aes(y = trend_remainder), color = '#636363') +
+  geom_line(aes(y = trend), col = "blue", size = 1.3) +
+  labs(title = "WI Remainder + Trend and Trend") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+
+```
+
+And in the last graph, the dots reflect the raw data against the trend line.
+
+```{r, raw data and trend, echo = FALSE}
+
+# dots are actual data - I think this is less confusing
+
+stl_WI_df %>% 
+  ggplot(aes(x = New_Date)) +
+  geom_point(aes(y = Just_WI), color = '#636363') +
+  geom_line(aes(y = trend), col = "blue", size = 1.3) +
+  labs(title = "WI Raw Data and Trend") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+```
+
+### Questions
+
+1. At a high level, is there something wrong or misleading in my approach to presenting trend information?
+
+2. Can I confirm that seasonality does in fact exist at some confidence level/p-value, or is this an eyeball assessment?  
+
+3. How to check multiplicative vs additive?
+
+4. What is stl doing that is different than decompose?
+
+The graphs produced via the stl components seem like they could give people a basic overview of how eviction filings are trending for a particular region...but it feels a little bit like....
+
+```{r, fig.align = 'center', echo = FALSE}
+
+include_graphics("magic.png")
+
+```
