@@ -1,0 +1,594 @@
+---
+title: "Eviction Filings"
+subtitle: 'Part 2: Follow-Up to Time Series'
+author: "Bliss Cohen"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width=6, fig.height=4)
+library(tidyverse)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+library(lubridate)
+library(timeDate)
+
+```
+
+### Background
+
+This document continues the work started in the [Time Series](https://github.com/b19356/Time_Series) project (see [Time Series Exploration with Eviction Filings](https://github.com/b19356/Time_Series/blob/master/Time_Series.pdf)).  The goal of the project is to identify the best way to present data to help answer the following questions:
+
+* How are eviction filings trending for a particular region?
+* Is one region's filings higher or lower than another region?
+
+Once the answers to the above questions are obtained, the next step is to identify suitable thresholds for initiating specific intervention.
+
+After Guy and I talked on November 25th, 2020, I revised my approach to explore aggregated daily data, rather than monthly aggregations, without a time series lens.  In other words, back to basics.
+
+### Objective
+
+Obtain feedback on data wrangling and initial smoothing approaches
+
+### Read in Data 
+
+The following file aggregates the number of daily eviction filings from January, 2016 - November, 2020 across 12 regions of interest.  The 'Est_Occ_Units' is an estimate of the number of occupied rental units for the region, as obtained from the U.S. Census American Community Survey.
+
+```{r read in data}
+
+Daily_filings <- read_rds("Daily_filings.rds")
+
+head(Daily_filings)
+
+```
+
+### Examine Distribution of Eviction Filings
+
+The clump on the left side of the histogram is due to smaller County-related filings while larger values belong to the State (WI).  There are no '0' values or NA's.
+
+```{r}
+
+Daily_filings %>% 
+  ggplot(aes(x=Num_evictions)) +
+  geom_histogram() +
+  labs(title="5-Year Daily Evictions (2016-Nov, 2020)",
+       x="Number Eviction Filings") +
+  theme_classic()
+
+summary(Daily_filings$Num_evictions)
+
+```
+
+### Plot Filings by Day (Gut Check)
+
+The plots below compare the most populated region - the entire state of Wisconsin - to the smallest region, Kewaunee County.
+
+```{r develop plotting functions}
+
+integer_breaks <- function(x) {
+  floor(pretty(x))
+}
+
+plot_regions <- function(region){
+  Daily_filings %>% 
+    filter(Region == region) %>% 
+    ggplot(aes(x=New_Date, y=Num_evictions)) + 
+    geom_line() +
+    scale_x_date(date_breaks = "3 months", date_labels = "%b-%y") +
+    scale_y_continuous(breaks = integer_breaks) +
+    labs(title = paste(region, "Eviction Filings")) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm"))
+  
+}
+
+WI_p <- plot_regions("WI")
+Kewaunee_p <- plot_regions("Kewaunee")
+
+```
+
+```{r compare WI to Kewaunee no complete}
+
+WI_p + Kewaunee_p
+
+```
+
+### Fill in Daily Sequence with '0' Filings and Replot
+
+The Kewaunee graph above seemed to flat line at '1' for months on end, leading me to suspect that there were many dates for which no evictions were filed.  There are 365 days in a year.  The tables below show the number of days in each year associated with a filing.  It makes sense that the least populous region Kewaunee had very few filing days per year while the most populous region WI had filings on most days of the year.
+
+```{r create function to count filing days by year}
+
+examine_dates <- function(region) {
+  Daily_filings %>% 
+    filter(Region == region) %>% 
+    count(Year)
+}
+
+```
+
+```{r show number of filing days}
+
+examine_dates("Kewaunee") %>% 
+  kable(caption = "Kewaunee: Number of Days Evictions Were Filed by Year") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+examine_dates("WI") %>% 
+  kable(caption = "Wisconsin: Number of Days Evictions Were Filed by Year") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+I believe that missing days mean no evictions were filed on that day.  In other words, number of filings = 0 rather than NULL or NA.  I think it will be easier to compare regions if they share the same dates.  As a result, I will fill in the daily sequence with 0 filings for missing days.  
+
+The tables show updates specific to WI and Kewaunee after completing the daily sequence.
+
+```{r complete daily sequence}
+
+# rather than complete sequences for Month, Year, Day, will add on the back end with lubridate functions
+
+Daily_complete <- Daily_filings %>% 
+  complete(New_Date = seq.Date(from = as.Date("2016-01-01"),
+                               to = as.Date("2020-11-30"),
+                               by = "day"), 
+           nesting(Region, Est_Occ_Units),
+           fill = list(Num_evictions = 0)) %>% 
+  mutate(Month = month(New_Date),
+         Year = year(New_Date),
+         Day = day(New_Date))
+
+```
+
+```{r create function after completing records}
+
+examine_dates_filled <- function(region) {
+  Daily_complete %>% 
+    filter(Region == region) %>% 
+    count(Year)
+}
+
+```
+
+```{r show completed sequence}
+
+examine_dates_filled ("Kewaunee") %>% 
+  kable(caption = "Kewaunee: Each Day Now Has a Record") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+examine_dates_filled ("WI") %>% 
+  kable(caption = "Wisconsin: Each Day Now Has a Record") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+The WI and Kewaunee graphs are re plotted below after filling in the daily sequence.  Now Kewaunee doesn't flat line at 1; if no filings were present, the baseline is 0.
+
+```{r develop function for replotting after daily complete}
+
+# will filter out weekends
+
+plot_regions_complete <- function(region){
+  Daily_complete %>% 
+    filter(Region == region) %>% 
+    ggplot(aes(x=New_Date, y=Num_evictions)) + 
+    geom_line() +
+    scale_x_date(date_breaks = "3 months", date_labels = "%b-%y") +
+    scale_y_continuous(breaks = integer_breaks) +
+    labs(title = paste(region, "Eviction Filings"),
+         subtitle = "Post Completing Daily Sequence") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm"))
+  
+}
+
+WI_p_complete <- plot_regions_complete("WI")
+
+Kewaunee_p_complete <- plot_regions_complete("Kewaunee")
+
+```
+
+```{r compare WI to Kewaunee}
+
+WI_p_complete + Kewaunee_p_complete
+
+```
+
+### Label Weekdays/Holiday Days 
+
+In order to identify trends, it makes sense to filter out days in which entering an eviction filing wasn't even possible in the first place.  In other words, most likely, eviction filings are not entered on weekends and holidays.  If true, including weekends and holidays - at least to some extent - may mask patterns.
+
+There are 260 non-weekend days in a year (261 for leap years) and 17 official holidays.  I need to label dates if they fall into these categories:
+
+* Weekdays
+* Holidays
+
+```{r develop df of holidays for years of interest}
+
+# listHolidays("US")
+
+years <- c(2016:2020)
+
+# Create df of holiday days
+
+US_holidays <- map(years, 
+    ~tibble("Date" = as.Date(c(USChristmasDay(.x),
+                               USColumbusDay(.x),
+                               USCPulaskisBirthday(.x),
+                               USDecorationMemorialDay(.x),
+                               USElectionDay(.x),
+                               USGoodFriday(.x),
+                               USInaugurationDay(.x),
+                               USIndependenceDay(.x),
+                               USLaborDay(.x),
+                               USLincolnsBirthday(.x),
+                               USMemorialDay(.x),
+                               USMLKingsBirthday(.x),
+                               USNewYearsDay(.x),
+                               USPresidentsDay(.x),
+                               USThanksgivingDay(.x),
+                               USVeteransDay(.x),
+                               USWashingtonsBirthday(.x))),
+            "Holiday" = c("Christmas Day",
+                          "Columbus Day",
+                          "CPulaski's Birthday",
+                          "Decoration Memorial Day",
+                          "Election Day",
+                          "Good Friday",
+                          "Inauguration Day",
+                          "Independence Day",
+                          "Labor Day",
+                          "Lincoln Birthday",
+                          "Memorial Day",
+                          "MLK Birthday",
+                          "New Years Day",
+                          "Presidents Day",
+                          "Thanksgiving Day",
+                          "Veterans Day",
+                          "Washingtons Birthday"))) %>% 
+  reduce(rbind)
+
+
+```
+
+```{r join holidays}
+
+Daily_complete_label <- 
+  left_join(Daily_complete, US_holidays,
+            by = c("New_Date" = "Date"))
+
+```
+
+```{r assign weekday}
+
+Daily_complete_label <- Daily_complete_label %>% 
+  mutate("Weekday" = weekdays(New_Date))
+
+```
+
+A handful of records did have a filing date on the weekend.  These weekend filings only had one eviction and all were at the State level (outside the Counties of interest).  Thus, in general, evictions are not filed on the weekend.
+
+```{r show weekend filings}
+
+Daily_complete_label %>% 
+  filter((Weekday == "Saturday" | Weekday == "Sunday") & 
+           Num_evictions > 0) %>% 
+  select(New_Date, Region, Weekday, Num_evictions) %>%  
+  kable(caption = "Number of Weekend Filings", align = 'c') %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+The next task is to determine which holidays are non-working days.  The table below compiles eviction filings by holiday.  Certainly the first 5 holidays are honored: Christmas Day, Independence Day, Labor Day, Memorial Day, and Thanksgiving.
+
+```{r show holiday filings}
+
+Daily_complete_label %>% 
+  filter(!is.na(Holiday)) %>% 
+  group_by(Holiday) %>% 
+  summarise("Number_evictions" = sum(Num_evictions)) %>% 
+  arrange(Number_evictions) %>% 
+  kable(caption = "Holiday Filings") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+Only 3 filings were recorded on New Year's Day.  Actually, there was only a single filing on New Year's Day in Outagamie County; BNGP Counties and WI are aggregated from this filing.
+
+```{r show New Years Day filing}
+
+Daily_complete_label %>% 
+  filter(Holiday == "New Years Day" & Num_evictions !=0) %>% 
+  select(New_Date, Region, Num_evictions, Holiday, Weekday) %>% 
+  kable(caption = "New Years Day Filings") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+Perhaps the single New Year's Day filing and the weekend filings were the result of dutiful, committed employees.  Or perhaps they were data entry errors.  In any case, the tables below show the days to remove when identifying trends.
+
+```{r label days to filter}
+
+# create vector for filtering non-valid entry days
+
+remove_days <- c("Saturday", "Sunday", "Christmas Day",
+                 "Independence Day", "Labor Day",
+                 "Memorial Day", "Thanksgiving Day",
+                 "New Years Day")
+
+# label non-valid days
+
+Daily_complete_final <- Daily_complete_label %>% 
+  mutate("Valid" = if_else((Holiday %in% remove_days |
+                              Weekday %in% remove_days),
+                           "No", "Yes"))
+
+```
+
+```{r show number of rows to remove}
+
+Daily_complete_final %>%
+  filter(Valid == "No" &
+           !(Weekday == "Saturday" | Weekday == "Sunday")) %>%
+  count(Holiday, Valid) %>%
+  kable(caption = "Number Holiday Rows to Remove") %>%
+  kable_styling(latex_options = "HOLD_position")
+
+Daily_complete_final %>%
+  filter(Valid == "No" & (Weekday == "Saturday" | Weekday == "Sunday")) %>%
+  count(Weekday, Valid) %>%
+  kable(caption = "Number Weekend Rows to Remove") %>% 
+  kable_styling(latex_options = "HOLD_position")
+  
+  
+```
+
+Back to good ole' WI and Kewaunee.  The plots now show filings after filtering out non-valid days.
+
+```{r develop function for replotting after removing non valid days}
+
+# will filter out weekends
+
+plot_regions_final <- function(region){
+  Daily_complete_final %>% 
+    filter(Region == region & Valid == "Yes") %>% 
+    ggplot(aes(x=New_Date, y=Num_evictions)) + 
+    geom_line() +
+    scale_x_date(date_breaks = "3 months", date_labels = "%b-%y") +
+    scale_y_continuous(breaks = integer_breaks) +
+    labs(title = paste(region, "Eviction Filings"),
+         subtitle = "Valid Filing Days") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm"))
+  
+}
+
+WI_p_final <- plot_regions_final("WI")
+
+Kewaunee_p_final <- plot_regions_final("Kewaunee")
+
+```
+
+```{r compare WI to Kewaunee using final df}
+
+WI_p_final + Kewaunee_p_final
+
+```
+
+### Smoothing (After Removing Weekends and Holidays)
+
+Obviously, the data is way too noisy to identify trends so I will experiment with different types of smoothing.  To keep things simple, we'll focus on WI as a test drive.
+
+#### Linear Regression
+
+Linear regression tells us that there is a significant association between the number of evictions over time, but the model only accounts for less than 6% of the variance.
+
+```{r create WI df}
+
+# only keep valid dates (exclude holidays and weekends)
+
+Just_WI <- Daily_complete_final %>% 
+  filter(Region == "WI" & Valid == "Yes")
+
+```
+
+```{r run WI linear regression}
+
+WI_lm <- lm(Num_evictions ~ New_Date, data = Just_WI)
+
+summary(WI_lm)
+
+```
+
+```{r linear fit}
+
+Just_WI %>% 
+  ggplot(aes(x=New_Date, y = Num_evictions)) +
+  geom_point(color = "#C4C3C3") +
+  geom_smooth(method=lm, 
+              color="#66C2A5", size=1.5) +
+  labs(title = "WI Eviction Filings",
+       subtitle = "Linear Regression") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+```
+
+#### Loess
+
+The linear fit is not good because the data doesn't follow a linear trend.  After googling some stuff, I decided that local regression via loess wouldn't be too much of a stretch for me.
+
+I was getting an error when I tried using the dates as 'x'.  I used this [guide](http://r-statistics.co/Loess-Regression-With-R.html) to learn that dates needed to be converted to a numeric sequence.  Not quite sure why, but maybe the model can't do math on date objects as it tries to figure out which x values fit a span.
+
+I explored different span sizes but did not change the 2 degree polynomial fitting default.
+
+The graph below is zoomed in to show the different smooths.  The loess with a 10% span best follows the curve.
+
+```{r run loess and extract fitted values and residuals}
+
+# Add index column since loess can't use dates
+
+Just_WI$Index <- 1:nrow(Just_WI)
+
+# Loess with different span windows
+
+WI_lo_10 <- loess(Num_evictions ~ Index,
+                  data=Just_WI, span=0.10)
+
+WI_lo_50 <- loess(Num_evictions ~ Index,
+                  data=Just_WI, span=0.50)
+
+WI_lo_75 <- loess(Num_evictions ~ Index,
+                    data=Just_WI, span=0.75)
+
+# Pull fitted values and residuals into df
+
+WI_model <- Just_WI %>% 
+  select(New_Date, Region, Num_evictions)
+
+WI_model$lm_fitted <- WI_lm$fitted.values
+WI_model$lm_residuals <- WI_lm$residuals
+WI_model$lo10_fitted <- WI_lo_10$fitted
+WI_model$lo10_residuals <- WI_lo_10$residuals
+WI_model$lo50_fitted <- WI_lo_50$fitted
+WI_model$lo50_residuals <- WI_lo_50$residuals
+WI_model$lo75_fitted <- WI_lo_75$fitted
+WI_model$lo75_residuals <- WI_lo_75$residuals
+
+```
+
+```{r create graphs for all WI models}
+
+WI_model_full_p <- WI_model %>% 
+  ggplot(aes(x=New_Date, y=Num_evictions)) +
+  geom_point(color="#C4C3C3") +
+  geom_line(aes(x=New_Date, y = lm_fitted, color="basic lm"),
+            size=1.5) +
+  geom_line(aes(x=New_Date, y = lo10_fitted, color="loess 10%"),
+            size=1.5) +
+  geom_line(aes(x=New_Date, y = lo50_fitted, color="loess 50%"),
+            size=1.5) +
+  geom_line(aes(x=New_Date, y = lo75_fitted, color="loess 75%"),
+            size=1.5) +
+  scale_color_manual(name = "Model", 
+                     values = c("#66C2A5","#FC8D62","#8DA0CB","#E78AC3"))+
+  labs(title="WI Evictions Filed",
+       subtitle="Different Models") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+
+
+WI_model_zoom_p <- WI_model %>% 
+  ggplot(aes(x=New_Date, y=Num_evictions)) +
+  geom_point(color="#C4C3C3") +
+  geom_line(aes(x=New_Date, y = lm_fitted, color="basic lm"),
+            size=1.5) +
+  geom_line(aes(x=New_Date, y = lo10_fitted, color="loess 10%"),
+            size=1.5) +
+  geom_line(aes(x=New_Date, y = lo50_fitted, color="loess 50%"),
+            size=1.5) +
+  geom_line(aes(x=New_Date, y = lo75_fitted, color="loess 75%"),
+            size=1.5) +
+  scale_color_manual(name = "Model", 
+                     values = c("#66C2A5","#FC8D62","#8DA0CB","#E78AC3"))+
+  coord_cartesian(ylim=c(0,200)) +
+  labs(title="WI Evictions Filed",
+       subtitle="Different Models") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+
+```
+
+```{r show zoomed in graph}
+
+WI_model_zoom_p
+
+```
+
+The table below, which summaries the Sum of Squared Error for each smooth, tells us the same thing as our eyeballs: the loess 10% span yields the smallest SSE.
+
+```{r find and show SSE}
+
+SSE_lm <- sum((WI_model$lm_residuals^2))
+
+SSE_lo10 <- sum((WI_model$lo10_residuals^2))
+
+SSE_lo50 <- sum((WI_model$lo50_residuals^2))
+
+SSE_lo75 <- sum((WI_model$lo75_residuals^2))
+
+SSE_summary <- tibble("Model" = c("Basic lm",
+                                  "Loess 10%",
+                                  "Loess 50%",
+                                  "Loess 75%"),
+                                  "SSE" =
+                                    c(SSE_lm,
+                                      SSE_lo10,
+                                      SSE_lo50,
+                                      SSE_lo75))
+
+```
+
+```{r show SSE}
+
+SSE_summary %>% 
+  kable(caption = "Sum of Squared Error") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+#### GAM Default
+
+In the above graphs, I specified the type of smooth.  Here is what the graph looks like if I let R loose to choose the default.
+
+```{r develop WI gam}
+
+WI_gam <- Just_WI %>% 
+  ggplot(aes(x=New_Date, y = Num_evictions)) +
+  geom_point(color = "#C4C3C3") +
+  geom_smooth() +
+  labs(title = "WI Eviction Filings",
+       subtitle = "Method = Default GAM (y ~ s(x, bs='cs'))") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+```
+
+```{r show WI gam}
+
+WI_gam
+
+```
+
+I then started down the rabbit hole of trying to figure out what GAM and all that 'flexible spline' stuff meant and very soon was way, way out of my league...time for an intervention.
+
+### Questions
+
+* Data Wrangling
+    + Would you complete a daily sequence and fill in missing days with 0 filings?
+    + Would you filter out weekends and holidays?
+    
+* Smoothing
+    + I understand that loess is different than finding a moving average, but how do we know if it is "better"?
+    + I basically understand summary(lm), but summary(loess) baffles me.  It seems that people don't get too caught up in the model output since the focus is visual.  Is this true, or should I investigate certain model outputs?  How do I come to grips with not really understanding the model output?
+    + Is there anything I should explore with GAM?
+
+* Next Steps
+    + Investigate loess with 10% span for all regions' filings?
+    + Repeat loess but with calculated rates so I can compare one region to another (rate = eviction filings per 1000 occupied rental units)
+
+
+
