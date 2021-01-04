@@ -1,0 +1,1354 @@
+---
+title: "Eviction Filings"
+subtitle: "Part 3"
+author: "Bliss Cohen"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: 
+  pdf_document:
+    keep_tex: true
+urlcolor: blue
+header-includes:
+  - \usepackage{fontawesome5}
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width=6, fig.height=3.5,
+                      tinytex.verbose = TRUE)
+library(tidyverse)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+library(lubridate)
+library(timeDate)
+library(RColorBrewer)
+library(tinytex)
+
+```
+
+\large\textbf{Background}
+
+\normalsize
+
+The goal of this project is to identify the best way to present data to answer the following questions:
+
+* How are eviction filings trending for a particular region?
+* What approach could be used to identify possible thresholds for initiating intervention programs?
+* Is one region's filings higher or lower than another?
+
+I revised my approach after Guy and I talked on December 23rd, 2020: 
+
+* Explore distributions more thoroughly
+* Deprioritize modeling efforts until data is better understood
+
+\large\textbf{Data Snapshot}
+
+\normalsize
+
+The following file aggregates the number of daily eviction filings from January, 2016 - December, 2020 across 12 regions of interest.  Missing days were filled in with a filing value = 0 to ensure each region had a record for every day of the year.  Since filings aren't entered on weekends and certain holidays, each record was labeled with a "Yes/No" valid filing day label. (I know I should use Boolean labels but I'm fighting years of habit...someday!)
+
+```{r read in data}
+
+# this file was prepared in the original Evictions.Rmd that is used to prepare files for the shiny app (removed Est_Occ_Units because I will update with 5-year 2019 estimates in this file)
+
+Daily_filings <- read_rds("Daily_filings.rds")
+
+```
+
+```{r complete daily sequence}
+
+# Fill in Missing Days and Label Holidays, Valid Filing Days
+
+# rather than complete sequences for Month, Year, Day, will add on the back end with lubridate functions, along with weekday and week
+
+# order region factors by population
+
+Daily_complete <- Daily_filings %>% 
+  complete(New_Date = seq.Date(from = as.Date("2016-01-01"),
+                               to = as.Date("2020-11-30"),
+                               by = "day"), 
+           nesting(Region),
+           fill = list(Num_evictions = 0)) %>% 
+  mutate(Month = factor(month(New_Date, label=TRUE, abbr=TRUE),
+                        levels=month.abb),
+         Year = year(New_Date),
+         Day = day(New_Date),
+         "Weekday" = factor(weekdays(New_Date),
+                            levels=c("Sunday", "Monday",
+                                     "Tuesday", "Wednesday",
+                                     "Thursday", "Friday", "Saturday")),
+         "Week" = week(New_Date),
+         "Quarter" = quarter(New_Date),
+         Region = factor(Region, levels=(c("WI", "BNGP Counties",
+                                          "Brown", "Outagamie", "Winnebago", "Waupaca", "Calumet", "Shawano", "Oconto", "Waushara", "Kewaunee", "Green Lake"))))
+
+```
+
+```{r develop df of holidays for years of interest}
+
+# listHolidays("US")
+
+years <- c(2016:2020)
+
+# Create df of holiday days
+# Note: will remove USDecorationMemorialDay because this is an old
+# name for memorial day...I discovered it caused problems down the road 
+
+US_holidays <- map(years, 
+    ~tibble("Date" = as.Date(c(USChristmasDay(.x),
+                               USColumbusDay(.x),
+                               USCPulaskisBirthday(.x),
+                               USElectionDay(.x),
+                               USGoodFriday(.x),
+                               USInaugurationDay(.x),
+                               USIndependenceDay(.x),
+                               USLaborDay(.x),
+                               USLincolnsBirthday(.x),
+                               USMemorialDay(.x),
+                               USMLKingsBirthday(.x),
+                               USNewYearsDay(.x),
+                               USPresidentsDay(.x),
+                               USThanksgivingDay(.x),
+                               USVeteransDay(.x),
+                               USWashingtonsBirthday(.x))),
+            "Holiday" = c("Christmas Day",
+                          "Columbus Day",
+                          "CPulaski's Birthday",
+                          "Election Day",
+                          "Good Friday",
+                          "Inauguration Day",
+                          "Independence Day",
+                          "Labor Day",
+                          "Lincoln Birthday",
+                          "Memorial Day",
+                          "MLK Birthday",
+                          "New Years Day",
+                          "Presidents Day",
+                          "Thanksgiving Day",
+                          "Veterans Day",
+                          "Washingtons Birthday"))) %>% 
+  reduce(rbind)
+
+# Look for dates that might have duplicate holidays - This will cause problems with duplication down the road (learned the hard way)
+
+# 2020-01-20 is associated with 2 holidays - Inauguration Day and MLK Day
+
+# File away for future use
+
+# US_holidays %>% 
+#   group_by(Date) %>% 
+#   summarise(n=n()) %>% 
+#   filter(n>1)
+# 
+# US_holidays %>% 
+#   filter(Date == '2020-01-20')
+
+```
+
+```{r join holidays}
+
+Daily_complete_label <- 
+  left_join(Daily_complete, US_holidays,
+            by = c("New_Date" = "Date"))
+
+```
+
+```{r show weekend filings, eval=FALSE}
+
+Daily_complete_label %>% 
+  filter((Weekday == "Saturday" | Weekday == "Sunday") & 
+           Num_evictions > 0) %>% 
+  select(New_Date, Region, Weekday, Num_evictions) %>%  
+  kable(caption = "Number of Weekend Filings", align = 'c') %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+```{r show holiday filings, eval=FALSE}
+
+Daily_complete_label %>% 
+  filter(!is.na(Holiday)) %>% 
+  group_by(Holiday) %>% 
+  summarise("Number_evictions" = sum(Num_evictions)) %>% 
+  arrange(Number_evictions) %>% 
+  kable(caption = "Holiday Filings") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+```{r show New Years Day filing, eval=FALSE}
+
+
+Daily_complete_label %>% 
+  filter(Holiday == "New Years Day" & Num_evictions !=0) %>% 
+  select(New_Date, Region, Num_evictions, Holiday, Weekday) %>% 
+  kable(caption = "New Years Day Filings") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+```
+
+```{r identify valid vs non valid filing days and remove dup dates}
+
+# create vector for filtering non-valid entry days
+
+remove_days <- c("Saturday", "Sunday", "Christmas Day",
+                 "Independence Day", "Labor Day",
+                 "Memorial Day", "Thanksgiving Day",
+                 "New Years Day")
+
+# label non-valid days
+
+Daily_complete_final <- Daily_complete_label %>% 
+  mutate("Valid" = if_else((Holiday %in% remove_days |
+                              Weekday %in% remove_days),
+                           "No", "Yes"))
+
+# Double check 2020-01-20 which had duplicate holidays
+
+# Daily_complete_final %>% 
+#   filter(Region == 'WI' & New_Date == '2020-01-20') %>% 
+#   select(New_Date, Region, Num_evictions, Holiday)
+
+# Remove 2020-01-20 Inauguration Day since this will double count
+# the MLK B-day and it is never a day off
+
+# Will remove 12 rows
+
+# nrow(Daily_complete_final)
+
+Daily_complete_final_2 <- Daily_complete_final %>% 
+  filter(!(New_Date == '2020-01-20' & 
+           Holiday == "Inauguration Day"))
+
+# nrow(Daily_complete_final_2)
+
+# Confirm Inauguration day is gone
+
+# Daily_complete_final_2 %>% 
+#   filter(New_Date == '2020-01-20') %>% 
+#   select(New_Date, Region, Holiday)
+
+```
+
+```{r read in features previously prepared}
+
+
+# Additional variables from the U.S. Census and United Way were gathered for each region (see Appendix for documentation).  
+
+# * Population
+# * Number of renter occupied units
+# * Total number of Households 
+# * Number Households under the Official Poverty Level
+# * Household median income
+# * Household mean income
+# * Number ALICE Households (above Official Poverty Level but unable to meet basic needs)
+
+# The supplemental variables listed above were joined to eviction filings. 
+
+Features_BNGP_WI <- read_rds("Features_BNGP_WI.rds")
+
+```
+
+```{r join evictions and features}
+
+
+Evictions_features <- 
+  left_join(Daily_complete_final_2,
+            select(Features_BNGP_WI, -c(GEOID, NAME)),
+            by="Region")
+
+
+# Factor regions and order by population
+
+Evictions_features <- Evictions_features %>% 
+  mutate(Region = factor(Region, levels=(c("WI", "BNGP Counties",
+                                          "Brown", "Outagamie", "Winnebago", "Waupaca", "Calumet", "Shawano", "Oconto", "Waushara", "Kewaunee", "Green Lake"))))
+
+```
+
+```{r show file up to feature cols}
+
+glimpse(Evictions_features[1:11])
+
+```
+
+\large\textbf{Exploratory Highlights}
+
+\normalsize
+
+Before tackling the questions posed above, I will conduct more exploratory work.  I will continue the approach from Evictions_Part2.Rmd and compare a large population to a smaller one.
+
+\textbf{1. Filtering out non-valid filing days is useful for distribution analysis.}
+
+The histograms below compare WI to Kewaunee.  Both histograms have a large count near filings = 0 because they contain all the days in a year.  
+
+```{r develop daily filing histogram plot function}
+
+integer_breaks <- function(x) {
+  floor(pretty(x))
+}
+
+create_histogram <- function(region, valid) { 
+  if (missing(valid)) {
+  Evictions_features %>% 
+    filter(Region == region) %>% 
+    ggplot(aes(x=Num_evictions)) +
+    geom_histogram() +
+    scale_x_continuous(breaks = integer_breaks)+
+    labs(title=paste(region, "Daily Filings"),
+         subtitle="All Days",
+         x="Number of Eviction Filings") +
+    theme_classic() +
+    theme(axis.title.y=element_blank())
+  } else {
+    Evictions_features %>% 
+    filter(Region == region & Valid == valid) %>% 
+    ggplot(aes(x=Num_evictions)) +
+    geom_histogram() +
+    scale_x_continuous(breaks = integer_breaks)+
+    labs(title=paste(region, "Daily Filings"),
+         subtitle="Only Valid Days",
+         x="Number of Eviction Filings") +
+    theme_classic() +
+    theme(axis.title.y=element_blank())
+  }
+  
+}
+
+```
+
+```{r show WI and Kewaunee histogram all days}
+
+WI_hist <- create_histogram("WI")
+
+Kewaunee_hist <- create_histogram("Kewaunee")
+
+WI_hist + Kewaunee_hist
+
+```
+
+After filtering out non-valid days, WI no longer spikes around 0 but Kewaunee is still dominated by filings = 0.  It was surprising to see any 0-day filings for WI, but they appeared legitimate (fell within the eviction moratorium or on a delayed holiday - not shown).  
+
+```{r show WI and Kewaunee histogram only valid days}
+
+WI_hist_valid <- create_histogram("WI", "Yes")
+
+Kewaunee_hist_valid <- create_histogram("Kewaunee", "Yes")
+
+WI_hist_valid + Kewaunee_hist_valid
+
+```
+
+```{r find valid 0 filing days for WI, eval=FALSE}
+
+# It is interesting to note that WI had any valid 0 filing days at all.  Based on the table below, it appears that people got Monday, Dec. 26th off in 2016 since Christmas fell on a Sunday.  The remaining 0 filing days fell in 2020 during the first eviction moratorium spanning March 27, 2020 - May 26, 2020.
+
+Evictions_features %>% 
+  filter(Region == "WI" & Valid == "Yes" & Num_evictions == 0) %>% 
+  select(New_Date, Region, Weekday, Num_evictions) %>% 
+  kable(caption="Valid '0' Filing Days for WI") %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+\textbf{2. Many of the regions' filings are 'outliers'.}
+
+The following graphs compare boxplot distributions across all areas ordered by population.  The graph on the right zooms in to better view less populated regions.
+
+It is striking to see that even after filtering out non-valid days, many of the regions don't have visible boxplots because of all the filings = 0.  Hmmm...comparing regions to each other doesn't seem legit if you only have outliers???
+
+```{r all regions filing distribution boxplots}
+
+All_p <- Evictions_features %>% 
+  filter(Valid == "Yes") %>% 
+  ggplot(aes(x=Region, y=Num_evictions)) +
+  geom_boxplot() +
+  labs(title = "Daily Filings") +
+  scale_x_discrete(limits = rev(levels(Evictions_features$Region))) +
+  coord_flip() +
+  theme_classic() +
+  theme(axis.title = element_blank()) +
+  annotate(geom="text", label="Decreasing\nPopulation",
+           y = 200, x=10.5, color="#F8766D", size=3) +
+  annotate(geom="segment", x=9, xend=2, y=200, yend=200,
+           color="#F8766D", size=1, arrow=arrow())
+
+Zoom_p <- Evictions_features %>% 
+  filter(Valid == "Yes") %>% 
+  ggplot(aes(x=Region, y=Num_evictions)) +
+  geom_boxplot() +
+  labs(title = "Zoomed In") +
+  scale_x_discrete(limits = rev(levels(Evictions_features$Region))) +
+  coord_flip(ylim=c(0,30)) +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+All_p + Zoom_p
+
+```
+
+The remaining explorations primarily focus on WI given the state's robust distributions.
+
+\textbf{3. Filings are consistent across weekdays.}
+
+The number of filings is similar by day of week.  That said, Monday and Tuesday show higher spikes, possibly driven by backlogs from the weekend.  In general, Tuesday tends to be the most productive day of the week; people are either gearing up for the weekend by Wednesday or trying to come out of the weekend fog on Monday.  Tuesday does indeed seem to be the most productive filing day.
+
+```{r WI day of week}
+
+plot_by_weekday <- function(region){
+  Evictions_features %>% 
+    filter(Region == region & Valid == 'Yes') %>% 
+    ggplot(aes(x=Weekday, y=Num_evictions)) + 
+    geom_boxplot() +
+    scale_y_continuous(breaks = integer_breaks) +
+    coord_flip() +
+    labs(title = paste(region, "Filings by Day of Week"),
+         subtitle = "Valid Filing Days 2016-2020") +
+    theme_classic() +
+    theme(axis.title = element_blank())
+  
+}
+
+WI_weekday <- plot_by_weekday("WI")
+
+WI_weekday
+
+```
+
+\textbf{4. Filings show a wave-like behavior across the year.}
+
+Filings dip in the spring, peak in the summer, and then slowly taper off towards the end of the year, eventually bottoming out again in the spring of the following year.  The trend is easier to visualize when plotted by month instead of week given the seasonal patterns.
+
+```{r WI by month}
+
+plot_by_month <- function(region){
+  Evictions_features %>% 
+    filter(Region == region & Valid == "Yes") %>% 
+    ggplot(aes(x=Month, y=Num_evictions)) + 
+    geom_boxplot() +
+    labs(title = paste(region, "Filings by Month"),
+         subtitle = "Valid Filing Days 2016-2020") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm"))
+  
+}
+
+WI_month <- plot_by_month("WI")
+
+```
+
+```{r WI by week}
+
+plot_by_week <- function(region){
+  Evictions_features %>% 
+    filter(Region == region & Valid == "Yes") %>% 
+    ggplot(aes(x=Week, y=Num_evictions, group=Week)) + 
+    geom_boxplot() +
+    labs(title = paste(region, "Filings by Week"),
+         subtitle = "Valid Filing Days 2016-2020") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm"))
+  
+}
+
+WI_week <- plot_by_week("WI")
+
+```
+
+```{r WI month and week}
+
+WI_month + WI_week
+
+```
+
+\textbf{5. The number of filings changes across the years.}
+
+The following graph aggregates months across the years to yield the following insights:
+
+* Something changed in mid-2018, spiking eviction filings above 2016-2017 levels.
+* Filings stayed at the higher levels until early 2020.
+* Not surprisingly, 2020 is the most erratic year given the pandemic and eviction moratorium; filings may now be stabilizing at the lower 2016-2017 levels.
+
+```{r prep monthly agg}
+
+Monthly_agg <- 
+  Evictions_features %>% 
+  filter(Valid == "Yes") %>% 
+  group_by(Region, Year, Month) %>% 
+  summarise("Num_evictions" = sum(Num_evictions)) %>% 
+  ungroup() %>% 
+  mutate(Year = factor(Year, levels=c(2016:2020)),
+         "Year_mo" = as_date(paste0(Year,"-",Month,"-01"), format="%Y-%b-%d"))
+
+
+```
+
+```{r plot monthly agg}
+
+# add a black dot to show transition in 2018
+
+plot_monthly_agg <- function(region) {
+  Monthly_agg %>% 
+    filter(Region == region) %>% 
+    ggplot(aes(x=Month, y=Num_evictions, color=Year)) + 
+    geom_line(aes(group = Year), size=1.5) +
+    geom_point(data = Monthly_agg %>% 
+                 filter(Region == region & Month == "Jun" & Year == '2018'),
+               color="#FF69B4", size=3) +
+    scale_color_manual(name="Year",
+                       labels=c("2016", "2017", "2018", "2019", "2020"),
+                       values=c("#E0ECF4",
+                                "#BFD3E6",
+                                "#8C96C6",
+                                "#8C6BB1",
+                                "#4D004B"),
+                       guide=guide_legend(reverse=TRUE)) +
+    labs(title = paste(region, "Monthly Filings")) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm")) 
+}
+
+WI_monthly_agg <- plot_monthly_agg('WI')
+
+WI_monthly_agg
+
+```
+
+\textbf{6. Patterns are more difficult to see in small regions.}
+
+There is too much noise in small regions, as shown below, to identify clear patterns.
+
+```{r Brown and Winnebago monthly agg}
+
+# Some of the larger counties show similar trends as WI overall, but not all.  for instance, Brown reflect WI, but Winnebago has more noise (population 262,368 and 170,411 respectively).
+
+plot_monthly_agg_2 <- function(region) {
+  Monthly_agg %>%
+    filter(Region == region) %>%
+    ggplot(aes(x=Month, y=Num_evictions, color=Year)) +
+    geom_line(aes(group = Year), size=1.5) +
+    scale_color_manual(name="Year",
+                       labels=c("2016", "2017", "2018", "2019", "2020"),
+                       values=c("#E0ECF4",
+                                               "#BFD3E6",
+                                               "#8C96C6",
+                                 "#8C6BB1",
+                                               "#4D004B"),
+                       guide=guide_legend(reverse=TRUE)) +
+    labs(title = paste(region, "Monthly Filings")) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm"))
+}
+# 
+# 
+# Brown_monthly_agg <- plot_monthly_agg_l("Brown")
+# 
+# Winnebago_monthly_agg <- plot_monthly_agg_l("Winnebago")
+# 
+# Brown_monthly_agg + Winnebago_monthly_agg
+
+```
+
+```{r Kewaunee monthly agg}
+
+# And certainly the noise increases with Kewaunee, making it impossible to identify any trends (population 20,387).
+
+Kewaunee_monthly_agg <- plot_monthly_agg_2("Kewaunee")
+
+Kewaunee_monthly_agg
+
+```
+
+\large\textbf{Trends}
+
+\normalsize
+
+\textbf{1. Year-to-Date (YTD)}
+
+Identifying thresholds for initiating action is not an easy or well-defined task.  Should relief programs be implemented if eviction filings are up 10%?  20%?  50%?  To aid decision makers, it may be helpful to implement tools to trial different thresholds.
+
+The table below shows the % change between current vs prior years as of the last update.  In a Shiny app, the user could theoretically enter a threshold % to change 'Value Box' colors for each region (e.g. increasing, decreasing, steady).
+
+```{r find year to date change based on last update}
+
+# find date of last update
+
+current_end <- ymd(max(Evictions_features$New_Date))
+
+# Identify ranges for 1 year look back
+
+current_start <- ymd(paste(year(current_end),"-01-01"))
+  
+prior_end <- ymd(current_end) %m-% years(1)
+  
+prior_start <- ymd(paste(year(prior_end),"-01-01"))
+
+YTD_most_recent <- Evictions_features %>% 
+    filter(New_Date %within% 
+             interval(current_start, current_end) |
+              New_Date %within% 
+             interval(prior_start, prior_end)) %>% 
+    group_by(Region, Year) %>% 
+    summarise("YTD_filings" = sum(Num_evictions)) %>% 
+    arrange(Region, desc(Year)) %>% 
+  mutate(Start_date = paste0(Year,'-01-01'),
+         "End_date" = ifelse(ymd(Start_date) == current_start,
+                             as.character(current_end), 
+                             as.character(prior_end)),
+         "Pct_change" = 
+             round((YTD_filings-lead(YTD_filings))/
+                     lead(YTD_filings)*100,0)) %>% 
+  select(Region, Start_date, End_date, YTD_filings, Pct_change) 
+
+YTD_most_recent %>% 
+  mutate(Pct_change = replace_na(Pct_change, "")) %>% 
+  head() %>% 
+  kable(caption="Snapshot of Most Recent YTD (as of last update)",
+        col.names = c("Region", "Start", "End", "YTD Filings", "Pct Change vs Prior Year"),
+        align = c("l","c","c","c","c")) %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+If something in the snapshot was concerning, the user could explore historical year-on-year changes to see if the most recent trend was anomalous.
+
+In the example below, the end date was changed to February 29, 2020, just to make sure leap year issues were handled correctly.  Clearly finding a % threshold is pretty iffy for small regions.  
+
+```{r develop historical YTD function}
+
+YTD_historical <- function(date){
+  
+  end_2020 <- ymd(date)
+  
+  start_2020 <- ymd(paste(year(date),"-01-01"))
+  
+  end_2019 <- ymd(date) %m-% years(1)
+  
+  start_2019 <- ymd(paste(year(end_2019),"-01-01"))
+  
+  end_2018 <- ymd(date) %m-% years(2)
+  
+  start_2018 <- ymd(paste(year(end_2018),"-01-01"))
+  
+  end_2017 <- ymd(date) %m-% years(3)
+  
+  start_2017 <- ymd(paste(year(end_2017),"-01-01"))
+  
+  end_2016 <- ymd(date) %m-% years(4)
+  
+  start_2016 <- ymd(paste(year(end_2016),"-01-01"))
+  
+  Custom <- Evictions_features %>% 
+    group_by(Region) %>% 
+    summarise("2020-01-01" =
+                sum(Num_evictions[New_Date 
+                                    %within% 
+                                      interval(start_2020, end_2020)]),
+              "2019-01-01" =
+                sum(Num_evictions[New_Date 
+                                    %within% 
+                                      interval(start_2019, end_2019)]),
+              "2018-01-01" =
+                sum(Num_evictions[New_Date 
+                                    %within% 
+                                      interval(start_2018, end_2018)]),
+              "2017-01-01" = 
+                sum(Num_evictions[New_Date 
+                                    %within% 
+                                      interval(start_2017, end_2017)]),
+              "2016-01-01" =
+                sum(Num_evictions[New_Date 
+                                    %within% 
+                                      interval(start_2016, end_2016)]))
+  
+  Custom_pivot <-  Custom %>%
+    pivot_longer(cols = 2:6, names_to = "Start_date") %>% 
+    mutate(Start_date = factor(Start_date, levels=c('2020-01-01', 
+                                                    '2019-01-01', 
+                                                    '2018-01-01',
+                                                    '2017-01-01', 
+                                                    '2016-01-01'))) %>% 
+    arrange(Region, Start_date)
+  
+  
+  Custom_final <<- Custom_pivot %>%
+    mutate("End_date" = case_when(Start_date == '2020-01-01' ~ as.character(end_2020),
+                              Start_date == '2019-01-01' ~ as.character(end_2019),
+                              Start_date == '2018-01-01' ~ as.character(end_2018),
+                              Start_date == '2017-01-01' ~ as.character(end_2017),
+                              Start_date == '2016-01-01' ~ as.character(end_2016)),
+           "Pct_change" = round((value-lead(value))/
+                                 lead(value)*100,0),
+           "Pct_change" = ifelse(Start_date == '2016-01-01' | 
+                                   is.infinite(Pct_change),
+                                 NA_integer_,
+                                  Pct_change)) %>%
+    select(Region, Start_date, End_date, YTD_filings = value, Pct_change)
+  
+  
+  return(Custom_final)
+
+}
+
+```
+
+```{r YTD table output for WI and Kewaunee}
+
+YTD_historical('2020-02-29') %>% 
+  filter(Region == 'WI' | Region == 'Kewaunee') %>% 
+  mutate(Pct_change = replace_na(Pct_change, "")) %>% 
+  kable(caption="WI and Kewaunee YTD as of Feb. 29 (or 28th)",
+        col.names = c("Region", "Start", "End", "YTD Filings", "Pct Change vs Prior Year"),
+        align = c("l","c","c","c","c")) %>% 
+  kable_styling(latex_options = "HOLD_position")
+
+
+```
+
+```{r YTD plots for WI and Kewaunee, eval=FALSE}
+
+WI_YTD_p <- Custom_final %>% 
+  filter(Region == 'WI') %>% 
+  ggplot(aes(x=ymd(End_date), y=YTD_filings, color=Region)) +
+  geom_line(aes(group=Region)) +
+  geom_point() +
+  labs(title="WI Year to Date (YTD) Filings",
+       subtitle=paste("Jan 1 - ", 
+                      format(ymd('2020-02-29'), "%b %d"))) +
+  theme_classic() +
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = -0.1),
+        plot.margin = unit(c(0,0,0.5,0), "cm"),
+        legend.position = "none") 
+
+Kewaunee_YTD_p <- Custom_final %>% 
+  filter(Region == 'Kewaunee') %>% 
+  ggplot(aes(x=ymd(End_date), y=YTD_filings, color=Region)) +
+  geom_line(aes(group=Region)) +
+  geom_point() +
+  labs(title="Kewaunee Year to Date (YTD) Filings",
+       subtitle=paste("Jan 1 - ", 
+                      format(ymd('2020-02-29'), "%b %d"))) +
+  theme_classic() +
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = -0.1),
+        plot.margin = unit(c(0,0,0.5,0), "cm"),
+        legend.position = "none") 
+
+WI_YTD_p + Kewaunee_YTD_p
+
+```
+
+\textbf{2. Monthly}
+
+Monthly aggregations provide another way to investigate filings.  In a Shiny app, the user could hone in on a region and year.
+
+```{r trend month function}
+
+trend_month <- function(region) {
+  if (region %in% c('WI', 'BNGP Counties', 'Brown', 'Outagamie', 
+                       'Winnebago')) {
+  Monthly_agg %>% 
+    filter(Region == region) %>% 
+    ggplot(aes(x=ymd(Year_mo), y=Num_evictions)) + 
+    geom_line() +
+    geom_point() +
+    scale_x_date(date_breaks = "years", date_labels = "%Y") +
+    labs(title = paste(region, "Monthly Filings")) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm")) 
+  } else {
+  Monthly_agg %>% 
+    filter(Region == region) %>% 
+    ggplot(aes(x=ymd(Year_mo), y=Num_evictions)) + 
+      geom_step() +
+    scale_x_date(date_breaks = "years", date_labels = "%Y") +
+    labs(title = paste(region, "Monthly Filings")) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = -0.1),
+          axis.title = element_blank(),
+          plot.margin = unit(c(0,0,0.5,0), "cm")) 
+  }
+}
+
+WI_trend_month <- trend_month('WI')
+
+Kewaunee_trend_month <- trend_month('Kewaunee')
+
+WI_trend_month + Kewaunee_trend_month
+
+```
+
+\textbf{3. Daily}
+
+It's not clear if daily aggregations provide additional value.  And certainly, smoothing small regions is especially wonky and probably not a good idea.
+
+```{r}
+
+trend_daily <- function(region) {
+  Evictions_features %>% 
+    filter(Region == region & Valid == 'Yes') %>% 
+    ggplot(aes(x=New_Date, y = Num_evictions)) +
+    geom_point(color = "#C4C3C3") +
+    geom_smooth(method="loess", span=0.10, se=FALSE) +
+    scale_y_continuous(breaks = integer_breaks) +
+    scale_x_date(date_breaks = "years", date_labels = "%Y") +
+    labs(title = paste(region, "Daily Filings")) +
+    theme_classic() +
+    theme(axis.title = element_blank())
+}
+
+
+WI_trend_daily <- trend_daily('WI')
+
+Kewaunee_trend_daily <- trend_daily('Kewaunee')
+
+WI_trend_daily + Kewaunee_trend_daily
+
+
+```
+
+\large\textbf{Compare Regions}
+
+\normalsize
+
+Given the noise inherent in small regions, it might make more sense to compare different areas using annual aggregations rather than monthly.  Filings need to be scaled to an appropriate metric before making comparisons.
+
+The distribution below shows aggregated annual filings overall for the 12 regions.
+
+```{r aggregate year and calculate rate}
+
+# aggregate by Year and then calculate rates
+# don't need to worry about valid/invalid days because taking sum
+
+Yearly_rate <- Evictions_features %>% 
+  group_by(Region, Year, Renter_occ_units) %>% 
+  summarise("Num_evictions" = sum(Num_evictions)) %>% 
+  ungroup() %>% 
+  mutate("Rate_by_unit" = 
+           (Num_evictions/Renter_occ_units)*1000)
+
+Yearly_rate %>% 
+  ggplot(aes(x=Num_evictions)) +
+  geom_histogram() +
+  labs(title="Aggregated Yearly Filings - All Regions",
+       subtitle="2016 - 2020") +
+  theme_classic() +
+  theme(axis.title = element_blank())
+
+# Look at spread of aggregated yearly filings
+
+summary(Yearly_rate$Num_evictions)
+
+```
+
+Each region was joined with the estimated number of occupied rental units, as obtained from the U.S. Census.
+
+```{r show number of rental units by region}
+
+Evictions_features %>% 
+  select(Region, Renter_occ_units) %>% 
+  distinct() %>% 
+  arrange(desc(Renter_occ_units)) %>% 
+  kable(caption="Estimated Number of Occupied Rental Units",
+        col.names = c("Region", "Units")) %>% 
+  kable_styling(full_width = F, latex_options = 'HOLD_position')
+
+```
+
+An annual filing rate was calculated for each region by dividing the number of filings by the number of units.  The rate was ultimately expressed as the number of filings per 1000 rental units (filings/unit*1000).
+
+The graph below shows the boxplot distributions of filing rates for each region.  Visually, the distributions clump into 3 groups: low, medium and high.
+
+```{r annual aggregations box plots}
+
+# Let's first find the median rental unit rate so we can order regions in the plot
+
+Median_rental_rate <- Yearly_rate %>% 
+  group_by(Region) %>% 
+  summarise("Median_rental_rate" = median(Rate_by_unit))
+
+# Join median rental to main df
+
+Yearly_rate_2 <- left_join(Yearly_rate, Median_rental_rate,
+                         by="Region")
+
+# Now look at boxplots for rates by rental units - can see the 3 clumps
+
+Yearly_rate_2 %>% 
+  ggplot(aes(x=Rate_by_unit, 
+             y=reorder(Region, Median_rental_rate))) +
+  geom_boxplot() +
+  labs(title="Filing Rate: Aggregated Yearly Filings per 1000 Units",
+       subtitle="2016 - 2020",
+       x="Filings per 1000 Occupied Rental Units") +
+  theme_classic() +
+  theme(axis.title.y = element_blank()) +
+  geom_hline(yintercept = 4.5, linetype="dashed", 
+             color="#F8766D", size=1.5) +
+  geom_hline(yintercept = 8.5, linetype="dashed", 
+             color="#F8766D", size=1.5)
+
+```
+
+Filing rates were ranked from 1 to 12 with 1 being the lowest and 12 being the highest.  The low, medium, and high groups are visualized below across the years:
+
+* Similar to WI, Green Lake, Brown, and Winnebago have the highest rates
+* Outagamie, Kewaunee, Calumet, and Shawano have the lowest rates
+* The remaining counties, including the BNGP County aggregation, are somewhere in between
+
+```{r prep ranked df}
+
+# Rank unit rates within years across regions
+# 1 is lowest; 12 is highest
+
+Yearly_rate_rank <- Yearly_rate_2 %>% 
+  group_by(Year) %>% 
+  mutate("Rank_by_unit_rate" = 
+           as.integer(rank(Rate_by_unit)))
+
+# Find summed ranks separately
+# this will make it easier to develop the manual colors
+
+Summed_rank <- Yearly_rate_rank %>% 
+  group_by(Region) %>% 
+  summarise("Summed_rank" = sum(Rank_by_unit_rate))
+
+# Look for ties - Kewaunee and Calumet are tied
+
+# table(Summed_rank$Region, Summed_rank$Summed_rank)
+
+# How to break the tie? Look at median rental rate
+
+# Yearly_rate_rank %>% 
+#   filter(Region == 'Kewaunee' | Region == 'Calumet') %>% 
+#   select(Region, Median_rental_rate)
+
+# Calumet has a higher median rate of evictions than Kewaunee, so I will
+# manually rank Calumet higher than Kewaunee
+
+Summed_rank_adjust <- Summed_rank %>% 
+  ungroup() %>% 
+  mutate(Summed_rank = if_else(Region == 'Calumet',
+                               as.integer(15), Summed_rank))
+  
+
+# Join summed ranks to main df
+
+Yearly_rate_rank_2 <- left_join(Yearly_rate_rank, Summed_rank_adjust,
+                              by="Region")
+
+# Confirm 12 distinct rankings, 1 for each region - no ties
+
+# Yearly_rate_rank_2 %>%
+#   ungroup() %>%
+#   pull(Summed_rank) %>%
+#   n_distinct()
+
+```
+
+```{r prep ranked plot}
+
+# Next steps: factor the summed rank so values are discrete
+# then color by summed rank using
+# a manual substituted color vector for low, mid, high values
+
+Yearly_rate_rank_final <- Yearly_rate_rank_2 %>% 
+  mutate("Factor_sum" = factor(rank(Summed_rank))) %>% 
+  arrange(Summed_rank)
+
+# Create desired colors for low, medium and high groups
+
+# Make 6 colors so I can remove the lightest two
+
+col_green <- brewer.pal(6, "Greens")
+
+col_gray <- brewer.pal(6, "Greys")
+
+col_red <- brewer.pal(6, "Reds")
+
+# Identify labels for manual coloring (don't want them to be labeled "Factor_sum"!)
+
+# Cross tab to find summed rank order
+
+# table(test$Region, test$Factor_sum)
+
+# develop label vector in order of Factor_sum...lowest to highest (1-12)
+
+region_labels <- c("Outagamie", "Kewaunee", "Calumet", "Shawano",
+                   "Waupaca", "Oconto", "Waushara", "BNGP Counties",
+                   "Winnebago", "Brown", "Green Lake", "WI")
+
+# Create plot
+
+Yearly_rate_rank_final %>% 
+  ggplot(aes(x=Year, y=Rank_by_unit_rate, color=Factor_sum)) +
+  geom_line(aes(group=Region), size=1.5) + 
+  scale_y_continuous(breaks=integer_breaks) +
+  scale_color_manual(labels = region_labels,
+                     values=c(col_green[3:6],col_gray[3:6], col_red[3:6]),
+                     guide=guide_legend(reverse=TRUE)) +
+  labs(title="Annual Filing Rates: Ranked Lowest (1) to Highest (12)",
+       subtitle="Filings Per 1000 Units") +
+  theme_classic() +
+  theme(axis.title = element_blank(),
+        legend.title = element_blank(),
+        plot.subtitle = element_text(size=8))
+
+```
+
+\large\textbf{Questions and Next Steps}
+
+\normalsize
+
+* Did any analysis strike you as not 'data smart'? 
+    + Note I did not say 'data dumb' \faGrin
+* What visuals do you prefer and why?
+* Any additional explorations?
+* It feels like doing stats on this stuff is not a good idea given that many regions only have outliers.  Would you agree?  Is ranking OK?
+* I like the idea of flagging a warning if a particular region is trending up, but how?  % change doesn't make sense with small regions...maybe some type of 'control chart' +2-3 sigma?
+* In addition to the number of occupied rental units, I joined the features below.  Does it make sense to examine possible correlations (multicollinearity will be an issue):
+    + Population
+    + Total number of Households 
+    + Number Households under the Official Poverty Level
+    + Household median income
+    + Household mean income
+    + Number ALICE Households (above Official Poverty Level but unable to meet basic needs)
+
+\large\textbf{Appendix}
+
+\normalsize
+
+This section includes the code to pull and process variables from the U.S. Census and United Way.  All U.S. Census data were taken from the 2019 ACS 5-Year Estimates and accessed at the County and State geographies.  The United Way ALICE information contained 2018 data.
+
+\textbf{Process}
+
+* Use tidycensus::get_acs() to access Census data; download ALICE csv
+* Combine Features into a data frame
+* Create a BNGP County Aggregation
+    + Most of the variables could be summed across counties except for Median Household Income and Mean Household Income.  The aggregated median was assigned NA since medians aren't calculated.  The aggregated mean income was found by taking the average of the county averages.
+* Write Feature Files
+
+\textbf{References}
+
+```{r load packages, eval=FALSE}
+
+library(tidycensus)
+library(readxl)
+
+```
+
+[Population: Table B01003](https://data.census.gov/cedsci/table?q=B01003&tid=ACSDT5Y2019.B01003&hidePreview=false)
+
+```{r obtain populations, eval=FALSE}
+
+# https://data.census.gov/cedsci/table?q=B01003&tid=ACSDT5Y2019.B01003&hidePreview=false 
+# was used to acquire WI State and County population estimates
+# Overall populations do not have tabulated Margins of Error.
+
+State_pop <- get_acs(geography = "state",
+                     state = 'WI',
+                     table = 'B01003',
+                     year = 2019,
+                     survey = 'acs5')
+
+County_pop <- get_acs(geography = "county",
+                     state = 'WI',
+                     table = 'B01003',
+                     year = 2019,
+                     survey = 'acs5')
+
+```
+
+```{r combine state and county populations, eval=FALSE}
+
+# assertthat::are_equal(names(County_pop), names(State_pop))
+
+County_state_pop <- rbind(State_pop, County_pop)
+
+# Prep to bind with other features
+
+Pop_prep <- County_state_pop %>% 
+  select(GEOID, Population = estimate)
+
+```
+
+[Renter Occupied Units: Table S2502](https://data.census.gov/cedsci/table?q=S2502&tid=ACSST5Y2019.S2502&hidePreview=false)
+
+```{r obtain housing characteristics, eval=FALSE}
+
+# https://data.census.gov/cedsci/table?q=S2502&tid=ACSST5Y2019.S2502&hidePreview=false
+
+#From Table S2502, we can extract the number of renter-occupied housing units.  The desired variable is 5 columns over, first row:
+
+#S2502_C05_001 = Estimate!!Renter-occupied housing units!!Occupied housing units
+
+# Get entire table at county level
+
+S2502_county <- get_acs(geography = "county",
+                  state = 'WI',
+                  table = 'S2502',
+                  year = 2019,
+                  geometry = FALSE,
+                  survey = 'acs5')
+
+# Get table at State level
+
+S2502_WI <- get_acs(geography = "state",
+                    state = 'WI',
+                    table = 'S2502',
+                    year = 2019,
+                    geometry = FALSE,
+                    survey = 'acs5')
+
+# Get all variables - will help me hone in specifics for future requests
+
+S_Vars <- load_variables(year = '2019', "acs5/subject")
+
+# Create one county-state df
+
+S2502 <- rbind(S2502_county, S2502_WI)
+
+```
+
+```{r merge variables with table and filter to desired var, eval=FALSE}
+
+Jumbo_merge <- left_join(S2502, S_Vars,
+                         by = c("variable" = "name")) %>%
+  filter(variable == 'S2502_C05_001')
+
+```
+
+```{r prep renter units, eval=FALSE}
+
+# Prep to bind with other features
+
+Rental_prep <- Jumbo_merge %>% 
+  select(GEOID, Renter_occ_units = estimate)
+
+```
+
+[Total Households, Households Under Poverty Threshold, Median Household Income: Table S2201](https://data.census.gov/cedsci/table?q=S2201&tid=ACSST5Y2019.S2201&hidePreview=true)
+
+```{r obtain household poverty, eval=FALSE}
+
+# the ALICE data tallies total HH, not just families
+# So to be consistent, I want to pull total HH for poverty
+# S2201 contains HH poverty, including median income
+
+# https://data.census.gov/cedsci/table?q=S2201&tid=ACSST5Y2019.S2201&hidePreview=true
+
+# Total: first column, first row: S2201_C01_001 (All HH)
+# Number below poverty: first column, 21st row: S2201_C01_021 (HH below poverty)
+# Median HH Income: 	S2201_C01_034
+
+S2201_County <- get_acs("county", cache_table = TRUE,
+                           geometry = FALSE, state = 'WI', year = 2019, 
+                           output = 'tidy', survey = "acs5",
+                        variables = c("S2201_C01_001", "S2201_C01_021", "S2201_C01_034"))
+
+S2201_State <- get_acs("state", cache_table = TRUE,
+                           geometry = FALSE, state = 'WI', year = 2019, 
+                           output = 'tidy', survey = "acs5",
+                        variables = c("S2201_C01_001", "S2201_C01_021", "S2201_C01_034"))
+
+```
+
+```{r combine poverty and process, eval=FALSE}
+
+#assertthat::are_equal(names(S2201_County), names(S2201_State))
+
+County_state_pov <- rbind(S2201_County, S2201_State)
+
+# Split off median income
+
+Median_income_prep <- County_state_pov %>% 
+  filter(variable == 'S2201_C01_034') %>% 
+  select(GEOID, Median_HH_Income = estimate) 
+
+# Split off total number of HH
+
+Total_HH_prep <- County_state_pov %>% 
+  filter(variable == 'S2201_C01_001') %>% 
+  select(GEOID, Total_HH = estimate) 
+
+# Split off number of HH below poverty
+
+HH_pov_prep <- County_state_pov %>% 
+  filter(variable == 'S2201_C01_021') %>% 
+  select(GEOID, HH_pov = estimate)
+
+```
+
+[Mean Household Income: Table S1901](https://data.census.gov/cedsci/table?q=S1901&tid=ACSST1Y2019.S1901&hidePreview=false)
+
+```{r obtain mean income, eval=FALSE}
+
+# In order to create an aggregated BNGP area, I need to pull mean income
+# since it is OK to create the mean of means, but not 'median' of 'medians'...you 'discover' medians, you calculate means.
+
+#https://data.census.gov/cedsci/table?q=S1901&tid=ACSST1Y2019.S1901&hidePreview=false
+
+# Table S1901 has mean income - first column, 13th row
+
+S1901_County <- get_acs("county", cache_table = TRUE,
+                           geometry = FALSE, state = 'WI', year = 2019, 
+                           output = 'tidy', survey = "acs5",
+                        variables = "S1901_C01_013")
+
+S1901_State <- get_acs("state", cache_table = TRUE,
+                           geometry = FALSE, state = 'WI', year = 2019, 
+                           output = 'tidy', survey = "acs5",
+                        variables = "S1901_C01_013")
+
+```
+
+```{r process mean income, eval=FALSE}
+
+#assertthat::are_equal(names(S1901_County), names(S1901_State))
+
+Mean_income_bind <- rbind(S1901_County, S1901_State)
+
+# Split off median income
+
+Mean_income_prep <- Mean_income_bind %>% 
+  select(GEOID, Mean_HH_Income = estimate) 
+
+```
+
+[United Way ALICE for Wisconsin](https://www.unitedforalice.org/wisconsin)
+
+```{r download ALICE data and process, eval=FALSE}
+
+# https://www.unitedforalice.org/wisconsin
+# Download "DATA SHEET" - Save as ALICE_2018
+
+path <- "ALICE_2018_Raw.xlsx"
+
+# View sheets 
+
+path %>% excel_sheets()
+
+ALICE_sheets <- 
+  path %>% 
+  excel_sheets %>% 
+  set_names() %>% 
+  map(read_excel, path = path)
+
+# pluck second sheet 
+
+ALICE_County <- ALICE_sheets %>% 
+  pluck(2)
+
+# Extract ALICE HH
+
+# Note: I am using 2019 5-Year estimates for number of total HH and # HH below poverty threshold...so the % ALICE HH won't exactly match the latest 2018 United Way release, but will be close
+
+ALICE_prep <- ALICE_County %>% 
+  filter(Year == 2018) %>% 
+  select(GEOID = GEO.id2, NAME = GEO.display_label,
+         ALICE_HH = `ALICE Household`)
+
+# Add a row for WI 
+
+# Add up ALICE HH across counties
+
+WI_ALICE_HH <- ALICE_prep %>% pull(ALICE_HH) %>% sum()
+
+WI_ALICE_HH_df <- tibble("GEOID" = '55',
+                         "NAME" = "Wisconsin",
+                         "ALICE_HH" = WI_ALICE_HH)
+
+# Combine WI_ALICE with Counties
+
+# Keep NAME since I will use ALICE to kick off purrr left join
+
+ALICE_prep_WI <- rbind(ALICE_prep, WI_ALICE_HH_df)
+
+```
+
+
+
+```{r create one df for joining to evictions, eval=FALSE}
+
+# nrow(ALICE_prep_WI)
+# nrow(HH_pov_prep)
+# nrow(Total_HH_prep)
+# nrow(Median_income_prep)
+# nrow(Rental_prep)
+# nrow(Pop_prep)
+
+
+Features <- 
+  list(ALICE_prep_WI, HH_pov_prep, Total_HH_prep,
+       Median_income_prep, Mean_income_prep, Rental_prep, Pop_prep) %>% 
+                     reduce(left_join, by="GEOID")
+
+# Split NAME into Region
+
+Features <- Features %>% 
+  mutate("Region" = if_else(GEOID == '55', 'WI', 
+                            word(NAME, sep = " County")))
+
+```
+
+```{r aggregate BNGP, eval=FALSE}
+
+# Most of the features can be summed
+# Median HH income will be NA since you can't calculate a median
+# Mean HH income will be a mean of the means
+
+BNGP <- c("Brown", "Calumet", "Green Lake", "Kewaunee", "Oconto", "Outagamie",
+          "Shawano", "Waupaca", "Waushara", "Winnebago")
+
+
+BNGP_Agg <- Features %>% 
+  filter(Region %in% BNGP)
+
+# Create one line for aggregation
+
+BNGP_Agg_final <- tibble("GEOID" = NA,
+               "NAME" = "BNGP Counties",
+               "ALICE_HH" = sum(BNGP_Agg$ALICE_HH),
+               "HH_pov" = sum(BNGP_Agg$HH_pov),
+               "Total_HH" = sum(BNGP_Agg$Total_HH),
+               "Median_HH_Income" = NA,
+               "Mean_HH_Income" = mean(BNGP_Agg$Mean_HH_Income),
+               "Renter_occ_units" = sum(BNGP_Agg$Renter_occ_units),
+               "Population" = sum(BNGP_Agg$Population),
+               "Region" = "BNGP Counties")
+
+# Extract BNGP and WI from Features
+
+Features_BNGP_WI <- Features %>% 
+  filter(Region %in% BNGP | Region == 'WI')
+
+# Now rbind the BNGP aggregation
+
+Features_BNGP_WI <- rbind(Features_BNGP_WI, BNGP_Agg_final)
+
+```
+
+```{r write feature file, eval=FALSE}
+
+write_rds(Features, "Features_Counties_WI.rds")
+
+write_rds(Features_BNGP_WI, "Features_BNGP_WI.rds")
+
+```
+
+
+
